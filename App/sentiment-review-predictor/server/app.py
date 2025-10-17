@@ -11,6 +11,7 @@ from flask_cors import CORS
 from .model_utils import (
     CLASSIFIER_MODEL_PATH,
     FASTTEXT_MODEL_PATH,
+    TFIDF_VECTORIZER_PATH,
     ModelNotReadyError,
     predict_recommendation,
 )
@@ -30,6 +31,7 @@ def healthcheck() -> Any:
         "models": {
             "fasttext": FASTTEXT_MODEL_PATH.exists(),
             "classifier": CLASSIFIER_MODEL_PATH.exists(),
+            "tfidf_vectorizer": TFIDF_VECTORIZER_PATH.exists(),
         },
     })
 
@@ -63,7 +65,7 @@ def api_predict() -> Any:
     response = {
         "prediction": int(result["prediction"]),
         "confidence": result.get("confidence"),
-        "source": "fasttext-logistic",
+        "source": result.get("source", "backend"),
     }
     return jsonify(response)
 

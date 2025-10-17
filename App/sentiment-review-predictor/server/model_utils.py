@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import pickle
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -12,9 +14,39 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = "C:\Users\JAY\OneDrive\Desktop\RMIT\AP DS\Assignment\A3 - Part2\App\sentiment-review-predictor\models"
+MODEL_DIR = (BASE_DIR.parent / "models").resolve()
 FASTTEXT_MODEL_PATH = MODEL_DIR / "fasttext_model.bin"
 CLASSIFIER_MODEL_PATH = MODEL_DIR / "logistic_regression_model.pkl"
+TFIDF_VECTORIZER_PATH = MODEL_DIR / "tfidf_vectorizer.pkl"
+
+POSITIVE_KEYWORDS = {
+    "amazing",
+    "beautiful",
+    "best",
+    "comfortable",
+    "excellent",
+    "favorite",
+    "great",
+    "love",
+    "perfect",
+    "recommend",
+    "stylish",
+    "wonderful",
+}
+
+NEGATIVE_KEYWORDS = {
+    "awful",
+    "bad",
+    "cheap",
+    "disappointing",
+    "horrible",
+    "poor",
+    "return",
+    "terrible",
+    "uncomfortable",
+    "waste",
+    "worst",
+}
 
 
 class ModelNotReadyError(RuntimeError):
@@ -28,24 +60,27 @@ def _normalise_text(text: str) -> List[str]:
     return tokens
 
 
-@lru_cache(maxsize=1)
-def _load_fasttext_model():
-    """Lazily load the FastText model from disk."""
-    if not FASTTEXT_MODEL_PATH.exists():
-        raise ModelNotReadyError(
-            f"FastText model is missing. Expected at: {FASTTEXT_MODEL_PATH}"
-        )
+def _fallback_prediction(review_text: str, rating: Optional[float]) -> Dict[str, float]:
+    """Deterministic keyword-based heuristic used when ML models are unavailable."""
+    tokens = _normalise_text(review_text)
 
-    try:
-        from gensim.models.fasttext import FastText
-    except ModuleNotFoundError as exc:  # pragma: no cover - import guard
-        raise ModelNotReadyError(
-            "gensim is required to load the FastText model. Install the backend "
-            "dependencies listed in server/requirements.txt"
-        ) from exc
+    positive = sum(1 for token in tokens if token in POSITIVE_KEYWORDS)
+    negative = sum(1 for token in tokens if token in NEGATIVE_KEYWORDS)
 
-    LOGGER.info("Loading FastText model from %s", FASTTEXT_MODEL_PATH)
-    return FastText.load(str(FASTTEXT_MODEL_PATH))
+    rating_adjustment = 0.0
+    if rating is not None:
+        rating_adjustment = (float(rating) - 3.0) / 1.5  # favour positive ratings
+
+    score = positive - negative + rating_adjustment
+    probability = 1.0 / (1.0 + math.exp(-score))
+    prediction = 1 if probability >= 0.5 else 0
+    confidence = probability if prediction == 1 else 1.0 - probability
+
+    return {
+        "prediction": prediction,
+        "confidence": float(confidence),
+        "source": "fallback",
+    }
 
 
 @lru_cache(maxsize=1)
@@ -57,74 +92,39 @@ def _load_classifier():
         )
 
     try:
-        import joblib
-    except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+        with CLASSIFIER_MODEL_PATH.open("rb") as handle:
+            classifier = pickle.load(handle)
+    except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
         raise ModelNotReadyError(
-            "joblib is required to load the classifier. Install backend dependencies"
+            "scikit-learn is required to load the classifier. Install the backend dependencies"
         ) from exc
+    except Exception as exc:  # pragma: no cover - defensive logging
+        raise ModelNotReadyError(f"Unable to load classifier: {exc}") from exc
 
-    LOGGER.info("Loading classifier from %s", CLASSIFIER_MODEL_PATH)
-    return joblib.load(str(CLASSIFIER_MODEL_PATH))
-
-
-def _mean_vector(tokens: List[str], vector_size: int) -> np.ndarray:
-    """Return the mean FastText embedding for the provided tokens."""
-    if not tokens:
-        return np.zeros(vector_size, dtype=np.float32)
-
-    fasttext_model = _load_fasttext_model()
-    vectors: List[np.ndarray] = []
-
-    for token in tokens:
-        if token in fasttext_model.wv:
-            vectors.append(fasttext_model.wv[token])
-
-    if not vectors:
-        # Fallback to zeros if none of the tokens exist in the vocabulary
-        return np.zeros(vector_size, dtype=np.float32)
-
-    stacked = np.vstack(vectors)
-    return stacked.mean(axis=0)
+    LOGGER.info("Classifier loaded successfully from %s", CLASSIFIER_MODEL_PATH)
+    return classifier
 
 
-def _compose_feature_vector(
-    text: str,
-    rating: Optional[float],
-) -> np.ndarray:
-    """Build the feature vector expected by the classifier."""
-    classifier = _load_classifier()
-    fasttext_model = _load_fasttext_model()
-    tokens = _normalise_text(text)
+@lru_cache(maxsize=1)
+def _load_vectorizer():
+    """Lazily load the TF-IDF vectorizer used during training."""
+    if not TFIDF_VECTORIZER_PATH.exists():
+        raise ModelNotReadyError(
+            f"Vectorizer model is missing. Expected at: {TFIDF_VECTORIZER_PATH}"
+        )
 
-    base_vector = _mean_vector(tokens, fasttext_model.wv.vector_size)
-    expected_size = classifier.coef_.shape[1]
-    base_size = base_vector.size
+    try:
+        with TFIDF_VECTORIZER_PATH.open("rb") as handle:
+            vectorizer = pickle.load(handle)
+    except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
+        raise ModelNotReadyError(
+            "scikit-learn is required to load the vectorizer. Install the backend dependencies"
+        ) from exc
+    except Exception as exc:  # pragma: no cover - defensive logging
+        raise ModelNotReadyError(f"Unable to load vectorizer: {exc}") from exc
 
-    if base_size == expected_size:
-        return base_vector
-
-    # Prepare auxiliary features for classifiers trained with extra metadata
-    extras: List[float] = []
-    if rating is not None:
-        extras.append(float(rating) / 5.0)
-    # Provide a couple of deterministic text features so we can adapt to
-    # different classifier configurations (length & unique token ratio)
-    token_count = len(tokens)
-    extras.append(float(token_count))
-    unique_ratio = float(len(set(tokens))) / token_count if token_count else 0.0
-    extras.append(unique_ratio)
-
-    extras_array = np.array(extras, dtype=np.float32)
-    total_size = base_size + extras_array.size
-
-    if total_size >= expected_size:
-        combined = np.concatenate([base_vector, extras_array])
-        return combined[:expected_size]
-
-    # Pad with zeros if the classifier expects more features than we have
-    padding = np.zeros(expected_size - total_size, dtype=np.float32)
-    combined = np.concatenate([base_vector, extras_array, padding])
-    return combined
+    LOGGER.info("Vectorizer loaded successfully from %s", TFIDF_VECTORIZER_PATH)
+    return vectorizer
 
 
 def predict_recommendation(
@@ -136,16 +136,39 @@ def predict_recommendation(
     if not review_text or not review_text.strip():
         raise ValueError("review_text must be a non-empty string")
 
-    features = _compose_feature_vector(review_text, rating)
-    classifier = _load_classifier()
+    try:
+        classifier = _load_classifier()
+    except ModelNotReadyError as exc:
+        LOGGER.warning("Classifier unavailable, using fallback heuristic: %s", exc)
+        return _fallback_prediction(review_text, rating)
 
-    proba = classifier.predict_proba([features])[0]
+    # Try to predict directly first. Some submissions pickle a pipeline that
+    # already handles text vectorisation internally.
+    try:
+        proba = classifier.predict_proba([review_text])[0]
+    except Exception:  # pragma: no cover - depends on training pipeline
+        LOGGER.debug("Classifier requires manual vectorisation, loading TF-IDF model")
+        try:
+            vectorizer = _load_vectorizer()
+        except ModelNotReadyError as exc:
+            LOGGER.warning("Vectorizer unavailable, falling back to heuristic: %s", exc)
+            return _fallback_prediction(review_text, rating)
+
+        try:
+            features = vectorizer.transform([review_text])
+            proba = classifier.predict_proba(features)[0]
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.error("Prediction using trained model failed: %s", exc)
+            return _fallback_prediction(review_text, rating)
+
+    proba = np.asarray(proba, dtype=np.float32)
     prediction = int(np.argmax(proba))
-    confidence = float(proba[prediction])
+    confidence = float(proba[prediction]) if proba.size else 0.5
 
     return {
         "prediction": prediction,
         "confidence": confidence,
+        "source": "backend",
     }
 
 
@@ -154,4 +177,5 @@ __all__ = [
     "ModelNotReadyError",
     "FASTTEXT_MODEL_PATH",
     "CLASSIFIER_MODEL_PATH",
+    "TFIDF_VECTORIZER_PATH",
 ]
