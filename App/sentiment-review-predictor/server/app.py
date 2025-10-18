@@ -172,6 +172,7 @@ def create_review() -> Any:
         }),
         HTTPStatus.CREATED,
     )
+    return jsonify(response)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry-point
