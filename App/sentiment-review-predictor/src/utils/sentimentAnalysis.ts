@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { API_BASE_URL } from "@/lib/api";
 
 export type RecommendationSource = "backend" | "fallback";
 
@@ -36,8 +37,6 @@ const FALLBACK_NEGATIVE_WORDS = new Set([
   "waste",
   "worst"
 ]);
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 
 const fallbackPrediction = (reviewText: string, rating: number): RecommendationResult => {
   const tokens = (reviewText.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(Boolean);

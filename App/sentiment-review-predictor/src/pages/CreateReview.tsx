@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Navbar } from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,15 +10,17 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Sparkles, ThumbsUp, ThumbsDown } from "lucide-react";
-import { clothingItems, reviews } from "@/data/mockData";
 import { predictRecommendation, RecommendationResult } from "@/utils/sentimentAnalysis";
+import { fetchProductOptions, submitReview } from "@/lib/api";
+import { ProductOption } from "@/types/clothing";
 import { toast } from "sonner";
 
 const CreateReview = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [searchQuery, setSearchQuery] = useState("");
-  
+
   const preselectedItemId = searchParams.get("itemId");
   const [selectedItemId, setSelectedItemId] = useState<string>(preselectedItemId || "");
   const [title, setTitle] = useState("");
@@ -29,8 +32,21 @@ const CreateReview = () => {
   const [predictionSource, setPredictionSource] = useState<RecommendationResult["source"] | null>(null);
   const [manualRecommendation, setManualRecommendation] = useState<0 | 1 | null>(null);
   const [isPredicting, setIsPredicting] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const selectedItem = clothingItems.find(i => i.id === Number(selectedItemId));
+  const { data: productOptions = [], isLoading: isLoadingOptions } = useQuery({
+    queryKey: ["product-options"],
+    queryFn: fetchProductOptions,
+  });
+
+  useEffect(() => {
+    if (preselectedItemId && productOptions.length > 0) {
+      const exists = productOptions.some((option) => option.id === preselectedItemId);
+      if (exists) {
+        setSelectedItemId(preselectedItemId);
+      }
+    }
+  }, [preselectedItemId, productOptions]);
 
   useEffect(() => {
     setPredictedRecommendation(null);
@@ -38,6 +54,10 @@ const CreateReview = () => {
     setPredictionConfidence(null);
     setPredictionSource(null);
   }, [reviewText, rating]);
+
+  const selectedItem: ProductOption | undefined = productOptions.find(
+    (option) => option.id === selectedItemId,
+  );
 
   const handlePredict = async () => {
     if (!reviewText || !rating) {
@@ -73,9 +93,9 @@ const CreateReview = () => {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!selectedItemId || !title || !reviewText || !rating) {
       toast.error("Please fill in all required fields");
       return;
@@ -86,32 +106,43 @@ const CreateReview = () => {
       return;
     }
 
-    const newReview = {
-      id: reviews.length + 1,
-      clothingId: Number(selectedItemId),
-      title,
-      reviewText,
-      rating: Number(rating),
-      recommended: manualRecommendation,
-      age: age ? Number(age) : undefined,
-      createdAt: new Date().toISOString()
-    };
+    setIsSubmitting(true);
 
-    reviews.push(newReview);
-    
-    toast.success("Review submitted successfully!", {
-      description: "Your review has been added and is now visible to other shoppers"
-    });
+    try {
+      await submitReview({
+        productId: selectedItemId,
+        title,
+        reviewText,
+        rating: Number(rating),
+        recommended: manualRecommendation,
+        age: age ? Number(age) : undefined,
+      });
 
-    setTimeout(() => {
+      toast.success("Review submitted successfully!", {
+        description: "Your review has been added and is now visible to other shoppers",
+      });
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["products"] }),
+        queryClient.invalidateQueries({ queryKey: ["product", selectedItemId] }),
+        queryClient.invalidateQueries({ queryKey: ["product-options"] }),
+      ]);
+
       navigate(`/product/${selectedItemId}`);
-    }, 1500);
+    } catch (error) {
+      console.error("Failed to submit review", error);
+      toast.error("Unable to submit review", {
+        description: error instanceof Error ? error.message : "Please try again later.",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-background">
       <Navbar searchQuery={searchQuery} onSearchChange={setSearchQuery} />
-      
+
       <div className="container mx-auto px-4 py-8">
         <Button
           variant="ghost"
@@ -134,13 +165,17 @@ const CreateReview = () => {
               <form onSubmit={handleSubmit} className="space-y-6">
                 <div className="space-y-2">
                   <Label htmlFor="item">Select Item *</Label>
-                  <Select value={selectedItemId} onValueChange={setSelectedItemId}>
+                  <Select
+                    value={selectedItemId}
+                    onValueChange={setSelectedItemId}
+                    disabled={isLoadingOptions}
+                  >
                     <SelectTrigger>
-                      <SelectValue placeholder="Choose a clothing item" />
+                      <SelectValue placeholder={isLoadingOptions ? "Loading items..." : "Choose a clothing item"} />
                     </SelectTrigger>
                     <SelectContent>
-                      {clothingItems.map((item) => (
-                        <SelectItem key={item.id} value={item.id.toString()}>
+                      {productOptions.map((item) => (
+                        <SelectItem key={item.id} value={item.id}>
                           {item.title} - {item.category}
                         </SelectItem>
                       ))}
@@ -200,108 +235,61 @@ const CreateReview = () => {
                       </SelectContent>
                     </Select>
                   </div>
-
                   <div className="space-y-2">
-                    <Label htmlFor="age">Your Age (Optional)</Label>
+                    <Label htmlFor="age">Age (optional)</Label>
                     <Input
                       id="age"
                       type="number"
-                      placeholder="e.g., 25"
+                      min={0}
+                      placeholder="Enter your age"
                       value={age}
                       onChange={(e) => setAge(e.target.value)}
-                      min="1"
-                      max="120"
                     />
                   </div>
                 </div>
 
-                <div className="border-t pt-6">
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="font-semibold flex items-center gap-2">
-                          <Sparkles className="h-5 w-5 text-primary" />
-                          AI Recommendation Prediction
-                        </h3>
-                        <p className="text-sm text-muted-foreground">
-                          Our ML model will predict if you recommend this item
-                        </p>
-                      </div>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label>Recommendation</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Generate an AI-powered recommendation to pre-fill your response
+                      </p>
+                    </div>
+                    <Button type="button" variant="secondary" onClick={handlePredict} disabled={isPredicting}>
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      {isPredicting ? "Generating..." : "Predict"}
+                    </Button>
+                  </div>
+
+                  {(predictedRecommendation !== null || manualRecommendation !== null) && (
+                    <div className="grid grid-cols-2 gap-4">
                       <Button
                         type="button"
-                        variant="outline"
-                        onClick={handlePredict}
-                        disabled={!reviewText || !rating || isPredicting}
+                        variant={manualRecommendation === 1 ? "default" : "outline"}
+                        onClick={() => setManualRecommendation(1)}
                       >
-                        {isPredicting ? "Generating..." : "Generate Prediction"}
+                        <ThumbsUp className="mr-2 h-4 w-4" /> Recommended
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={manualRecommendation === 0 ? "default" : "outline"}
+                        onClick={() => setManualRecommendation(0)}
+                      >
+                        <ThumbsDown className="mr-2 h-4 w-4" /> Not Recommended
                       </Button>
                     </div>
+                  )}
 
-                    {predictedRecommendation !== null && (
-                      <Card className="bg-muted/50">
-                        <CardContent className="pt-6">
-                          <div className="space-y-4">
-                            <div className="space-y-2">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Label className="text-sm font-medium">Prediction:</Label>
-                                <Badge
-                                  variant={predictedRecommendation === 1 ? "default" : "secondary"}
-                                >
-                                  {predictedRecommendation === 1 ? (
-                                    <><ThumbsUp className="h-3 w-3 mr-1" /> Recommended</>
-                                  ) : (
-                                    <><ThumbsDown className="h-3 w-3 mr-1" /> Not Recommended</>
-                                  )}
-                                </Badge>
-                                {predictionSource && (
-                                  <Badge variant="outline" className="uppercase tracking-wide">
-                                    {predictionSource === "backend" ? "ML Model" : "Fallback"}
-                                  </Badge>
-                                )}
-                              </div>
-                              {predictionConfidence !== null && (
-                                <p className="text-xs text-muted-foreground">
-                                  Confidence: {(predictionConfidence * 100).toFixed(1)}%
-                                </p>
-                              )}
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label htmlFor="manual">
-                                Override Prediction (Optional)
-                              </Label>
-                              <Select 
-                                value={manualRecommendation?.toString()} 
-                                onValueChange={(val) => setManualRecommendation(Number(val) as 0 | 1)}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="1">
-                                    <span className="flex items-center">
-                                      <ThumbsUp className="h-4 w-4 mr-2" />
-                                      Recommended
-                                    </span>
-                                  </SelectItem>
-                                  <SelectItem value="0">
-                                    <span className="flex items-center">
-                                      <ThumbsDown className="h-4 w-4 mr-2" />
-                                      Not Recommended
-                                    </span>
-                                  </SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )}
-                  </div>
+                  {predictionConfidence !== null && predictionSource && (
+                    <p className="text-sm text-muted-foreground">
+                      Confidence: {(predictionConfidence * 100).toFixed(1)}% ({predictionSource === "backend" ? "Model" : "Fallback"} prediction)
+                    </p>
+                  )}
                 </div>
 
-                <Button type="submit" size="lg" className="w-full">
-                  Submit Review
+                <Button type="submit" className="w-full" disabled={isSubmitting}>
+                  {isSubmitting ? "Submitting..." : "Submit Review"}
                 </Button>
               </form>
             </CardContent>
