@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { API_BASE_URL } from "@/lib/api";
 
 export type RecommendationSource = "backend" | "fallback";
 
@@ -8,37 +9,50 @@ export interface RecommendationResult {
   source: RecommendationSource;
 }
 
-const FALLBACK_POSITIVE_WORDS = [
-  "love", "perfect", "amazing", "great", "excellent", "beautiful",
-  "fantastic", "highly recommend", "best", "wonderful", "gorgeous"
-];
+const FALLBACK_POSITIVE_WORDS = new Set([
+  "amazing",
+  "beautiful",
+  "best",
+  "comfortable",
+  "excellent",
+  "favorite",
+  "great",
+  "love",
+  "perfect",
+  "recommend",
+  "stylish",
+  "wonderful"
+]);
 
-const FALLBACK_NEGATIVE_WORDS = [
-  "poor", "terrible", "worst", "disappointing", "awful", "bad",
-  "horrible", "waste", "regret", "never", "not recommend"
-];
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+const FALLBACK_NEGATIVE_WORDS = new Set([
+  "awful",
+  "bad",
+  "cheap",
+  "disappointing",
+  "horrible",
+  "poor",
+  "return",
+  "terrible",
+  "uncomfortable",
+  "waste",
+  "worst"
+]);
 
 const fallbackPrediction = (reviewText: string, rating: number): RecommendationResult => {
-  const text = reviewText.toLowerCase();
+  const tokens = (reviewText.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(Boolean);
 
-  let positiveScore = 0;
-  let negativeScore = 0;
+  const positiveScore = tokens.filter(token => FALLBACK_POSITIVE_WORDS.has(token)).length;
+  const negativeScore = tokens.filter(token => FALLBACK_NEGATIVE_WORDS.has(token)).length;
 
-  FALLBACK_POSITIVE_WORDS.forEach(word => {
-    if (text.includes(word)) positiveScore++;
-  });
-
-  FALLBACK_NEGATIVE_WORDS.forEach(word => {
-    if (text.includes(word)) negativeScore++;
-  });
-
-  const ratingWeight = rating >= 4 ? 2 : (rating >= 3 ? 0 : -2);
-  const totalScore = positiveScore - negativeScore + ratingWeight;
+  const ratingAdjustment = Number.isFinite(rating) ? (rating - 3) / 1.5 : 0;
+  const totalScore = positiveScore - negativeScore + ratingAdjustment;
+  const probability = 1 / (1 + Math.exp(-totalScore));
+  const prediction = probability >= 0.5 ? 1 : 0;
+  const confidence = prediction === 1 ? probability : 1 - probability;
 
   return {
-    prediction: totalScore > 0 ? 1 : 0,
+    prediction: prediction as 0 | 1,
+    confidence,
     source: "fallback"
   };
 };

@@ -1,52 +1,65 @@
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { Navbar } from "@/components/Navbar";
 import { CategoryFilter } from "@/components/CategoryFilter";
 import { ClothingCard } from "@/components/ClothingCard";
-import { clothingItems } from "@/data/mockData";
+import { fetchProducts } from "@/lib/api";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ProductSummary } from "@/types/clothing";
 
 const Index = () => {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
+  const [page, setPage] = useState(1);
+  const pageSize = 12;
+
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ["products", { page, pageSize, searchQuery, selectedCategory }],
+    queryFn: () =>
+      fetchProducts({
+        page,
+        pageSize,
+        search: searchQuery.trim() || undefined,
+        category: selectedCategory === "All" ? undefined : selectedCategory,
+      }),
+    keepPreviousData: true,
+  });
 
   const categories = useMemo(() => {
-    const cats = Array.from(new Set(clothingItems.map(item => item.category)));
-    return cats.sort();
-  }, []);
+    return data?.availableCategories ?? [];
+  }, [data?.availableCategories]);
 
-  const filteredItems = useMemo(() => {
-    let items = clothingItems;
-
-    // Category filter
-    if (selectedCategory !== "All") {
-      items = items.filter(item => item.category === selectedCategory);
-    }
-
-    // Search filter with plural/singular support
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase().trim();
-      const queryWithoutS = query.endsWith('s') ? query.slice(0, -1) : query;
-      const queryWithS = query.endsWith('s') ? query : query + 's';
-
-      items = items.filter(item => {
-        const searchText = `${item.title} ${item.description} ${item.category}`.toLowerCase();
-        return searchText.includes(query) || 
-               searchText.includes(queryWithoutS) || 
-               searchText.includes(queryWithS);
-      });
-    }
-
-    return items;
-  }, [searchQuery, selectedCategory]);
+  const items: ProductSummary[] = data?.items ?? [];
+  const totalItems = data?.totalItems ?? 0;
+  const totalPages = data?.totalPages ?? 1;
+  const isLoadingItems = isLoading && !data;
 
   return (
     <div className="min-h-screen bg-background">
-      <Navbar searchQuery={searchQuery} onSearchChange={setSearchQuery} />
+      <Navbar
+        searchQuery={searchQuery}
+        onSearchChange={(value) => {
+          setSearchQuery(value);
+          setPage(1);
+        }}
+      />
       <CategoryFilter
         categories={categories}
         selectedCategory={selectedCategory}
-        onCategoryChange={setSelectedCategory}
+        onCategoryChange={(category) => {
+          setSelectedCategory(category);
+          setPage(1);
+        }}
       />
 
       <main className="container mx-auto px-4 py-8">
@@ -56,17 +69,27 @@ const Index = () => {
           </h1>
           {searchQuery && (
             <p className="text-muted-foreground">
-              Found {filteredItems.length} {filteredItems.length === 1 ? "item" : "items"} matching "{searchQuery}"
+              Found {totalItems} {totalItems === 1 ? "item" : "items"} matching "{searchQuery}"
             </p>
           )}
           {!searchQuery && (
             <p className="text-muted-foreground">
-              {filteredItems.length} {filteredItems.length === 1 ? "item" : "items"} available
+              {totalItems} {totalItems === 1 ? "item" : "items"} available
             </p>
           )}
         </div>
 
-        {filteredItems.length === 0 ? (
+        {isLoadingItems ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {Array.from({ length: pageSize }).map((_, index) => (
+              <div key={index} className="space-y-3">
+                <Skeleton className="h-64 w-full" />
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            ))}
+          </div>
+        ) : items.length === 0 ? (
           <div className="text-center py-12">
             <p className="text-xl text-muted-foreground">
               No items found matching your search.
@@ -76,15 +99,71 @@ const Index = () => {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {filteredItems.map((item) => (
-              <ClothingCard
-                key={item.id}
-                item={item}
-                onClick={() => navigate(`/product/${item.id}`)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {items.map((item) => (
+                <ClothingCard
+                  key={item.id}
+                  item={item}
+                  onClick={() => navigate(`/product/${item.id}`)}
+                />
+              ))}
+            </div>
+
+            {totalPages > 1 && (
+              <div className="mt-8">
+                <Pagination>
+                  <PaginationContent>
+                    <PaginationItem>
+                      <PaginationPrevious
+                        href="#"
+                        className={page === 1 ? "pointer-events-none opacity-50" : undefined}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          if (page > 1) {
+                            setPage(page - 1);
+                          }
+                        }}
+                      />
+                    </PaginationItem>
+                    {Array.from({ length: totalPages }).map((_, index) => {
+                      const pageNumber = index + 1;
+                      return (
+                        <PaginationItem key={pageNumber}>
+                          <PaginationLink
+                            href="#"
+                            isActive={pageNumber === page}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              setPage(pageNumber);
+                            }}
+                          >
+                            {pageNumber}
+                          </PaginationLink>
+                        </PaginationItem>
+                      );
+                    })}
+                    <PaginationItem>
+                      <PaginationNext
+                        href="#"
+                        className={page >= totalPages ? "pointer-events-none opacity-50" : undefined}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          if (page < totalPages) {
+                            setPage(page + 1);
+                          }
+                        }}
+                      />
+                    </PaginationItem>
+                  </PaginationContent>
+                </Pagination>
+              </div>
+            )}
+          </>
+        )}
+
+        {isFetching && !isLoadingItems && (
+          <p className="mt-4 text-sm text-muted-foreground">Updating results…</p>
         )}
       </main>
     </div>

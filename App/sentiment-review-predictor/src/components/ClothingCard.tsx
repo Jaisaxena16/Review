@@ -1,10 +1,10 @@
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Star } from "lucide-react";
-import { ClothingItem } from "@/types/clothing";
+import { ProductSummary } from "@/types/clothing";
 
 interface ClothingCardProps {
-  item: ClothingItem;
+  item: ProductSummary;
   onClick: () => void;
 }
 
@@ -31,11 +31,17 @@ export const ClothingCard = ({ item, onClick }: ClothingCardProps) => {
         </p>
       </CardContent>
       <CardFooter className="p-4 pt-0">
-        {item.rating && (
-          <div className="flex items-center gap-1 text-sm">
-            <Star className="h-4 w-4 fill-primary text-primary" />
-            <span className="font-medium">{item.rating.toFixed(1)}</span>
+        {typeof item.averageRating === "number" ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Star className="h-4 w-4 fill-primary text-primary" />
+              <span className="font-medium">{item.averageRating.toFixed(1)}</span>
+            </span>
+            <span aria-hidden>•</span>
+            <span>{item.reviewCount} review{item.reviewCount === 1 ? "" : "s"}</span>
           </div>
+        ) : (
+          <span className="text-sm text-muted-foreground">No ratings yet</span>
         )}
       </CardFooter>
     </Card>
